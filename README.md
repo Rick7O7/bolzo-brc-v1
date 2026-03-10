@@ -1,4 +1,5 @@
-# bolzo-brc-sync
+# BOLZO - BRC 
+## Version: 3.0
 
 Realtime Broadcast-Textarea mit Socket.IO, Room-URLs und Datei-Sync.
 
