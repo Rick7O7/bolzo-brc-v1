@@ -1,0 +1,13 @@
+{
+  "host": "127.0.0.1",
+  "port": 3000,
+  "mainRoom": "main",
+  "safeSpaceCodeLength": 8,
+  "maxRoomNameLength": 80,
+  "maxTextLength": 20000,
+  "maxFileSizeBytes": 8388608,
+  "maxFileNameLength": 120,
+  "rateLimitPerMinute": 60,
+  "maxClientsPerRoom": 50,
+  "sanitizeInput": false
+}

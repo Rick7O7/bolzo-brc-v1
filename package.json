@@ -1,0 +1,21 @@
+{
+  "name": "bolzo-brc-v1",
+  "version": "1.0.0",
+  "description": "Realtime synchronized textarea with rooms and file sync",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "keywords": [
+    "socket.io",
+    "realtime",
+    "rooms"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.19.2",
+    "socket.io": "^4.8.1"
+  }
+}

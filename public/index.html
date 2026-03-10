@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>BOLZO.NET - BRC sync</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section id="roomView" class="room">
+        <header class="roomHeader">
+          <div class="roomTitleWrap">
+            <p class="eyebrow">BOLZO.NET - BRC sync</p>
+            <strong id="roomBadge">Raum laden...</strong>
+            <p id="roomHint" class="hintText"></p>
+            <p id="configHint" class="hintText configHint"></p>
+          </div>
+          <a class="homeLink" href="/">Haupt-Raum</a>
+        </header>
+
+        <div class="actionsGrid">
+          <div class="actionCard">
+            <h2>Neuen SafeSpace starten</h2>
+            <p>Erstellt sofort einen frischen, privaten Raum mit Zufallscode.</p>
+            <button id="createSafeSpace" type="button">SafeSpace erstellen</button>
+          </div>
+
+          <div class="actionCard">
+            <h2>Vorhandenem Raum beitreten</h2>
+            <p>Code einfügen und direkt in den gemeinsamen Editor wechseln.</p>
+            <div class="joinRow">
+              <input id="joinInput" type="text" placeholder="Raumcode eingeben..." />
+              <button id="joinRoom" type="button">Beitreten</button>
+            </div>
+          </div>
+        </div>
+
+        <section class="editorCard">
+          <div class="editorTopBar">
+            <span class="dot"></span>
+            <span class="dot"></span>
+            <span class="dot"></span>
+            <p>Live-Notizbereich</p>
+          </div>
+          <textarea
+            id="sharedText"
+            placeholder="Tippe hier... jeder Buchstabe wird live an alle anderen übertragen."
+            disabled
+          ></textarea>
+        </section>
+
+        <div class="filePanel">
+          <label class="uploadLabel" for="fileInput">Datei hochladen</label>
+          <input id="fileInput" type="file" disabled />
+          <small>Dateien werden live mit allen im Raum geteilt</small>
+        </div>
+
+        <ul id="fileList" class="fileList"></ul>
+      </section>
+    </main>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="/app.js"></script>
+  </body>
+</html>
+

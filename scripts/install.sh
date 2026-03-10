@@ -17,12 +17,17 @@ if [[ "${EUID}" -ne 0 ]]; then
 fi
 
 export DEBIAN_FRONTEND=noninteractive
-apt-get update
+apt-get update || echo "Warnung: apt-get update hatte Fehler, fahre fort..."
 apt-get install -y ca-certificates curl git
 
 if ! command -v node >/dev/null 2>&1; then
-  curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-  apt-get install -y nodejs
+  if curl -fsSL https://deb.nodesource.com/setup_20.x | bash -; then
+    apt-get install -y nodejs
+  else
+    echo "Warnung: NodeSource nicht erreichbar, verwende Distribution-Pakete fuer Node.js."
+    apt-get update || echo "Warnung: apt-get update hatte Fehler, fahre fort..."
+    apt-get install -y nodejs npm
+  fi
 fi
 
 if ! getent group "${APP_GROUP}" >/dev/null; then
@@ -40,7 +45,11 @@ rm -rf "${APP_DIR}"
 mv "${TMP_DIR}" "${APP_DIR}"
 
 cd "${APP_DIR}"
-npm ci --omit=dev
+if [[ -f package-lock.json || -f npm-shrinkwrap.json ]]; then
+  npm ci --omit=dev
+else
+  npm install --omit=dev
+fi
 
 mkdir -p /etc/brc
 if [[ ! -f "${ENV_PATH}" ]]; then
