@@ -60,7 +60,7 @@ npm ci
 Direktinstallation auf Ubuntu/Debian (setzt systemd Service auf):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Rick7O7/bolzo-brc-v1/main/scripts/install.sh | sudo bash
+curl -fsSL https://get.bolzo.net/install.sh | sudo bash
 ```
 
 Danach:
@@ -84,7 +84,7 @@ sudo systemctl restart brc-server
 Deinstallation:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Rick7O7/bolzo-brc-v1/main/scripts/uninstall.sh | sudo bash
+curl -fsSL https://get.bolzo.net/uninstall.sh | sudo bash
 ```
 
 ## Start
