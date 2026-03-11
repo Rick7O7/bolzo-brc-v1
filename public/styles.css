@@ -287,6 +287,13 @@ input[type='text']:focus {
   gap: 0.7rem;
 }
 
+.fileActions {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin-left: auto;
+}
+
 .fileList span {
   color: #c8d0db;
   font-size: 0.81rem;
@@ -306,6 +313,18 @@ input[type='text']:focus {
 
 .fileList a:hover {
   border-color: var(--accent);
+}
+
+.deleteFileBtn {
+  padding: 0.34rem 0.55rem;
+  font-size: 0.74rem;
+  border-color: #5a2b2b;
+  background: #8a2f2f;
+  color: #ffe9e9;
+}
+
+.deleteFileBtn:hover {
+  filter: brightness(1.08);
 }
 
 @media (max-width: 900px) {

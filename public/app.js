@@ -54,6 +54,72 @@ let isApplyingRemoteUpdate = false;
 let isJoined = false;
 let activeRoom = null;
 
+function roomFilesStorageKey(room) {
+  return `brc:files:${room}`;
+}
+
+function readLocalRoomFiles(room) {
+  try {
+    const raw = localStorage.getItem(roomFilesStorageKey(room));
+    if (!raw) {
+      return [];
+    }
+
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (_error) {
+    return [];
+  }
+}
+
+function writeLocalRoomFiles(room, files) {
+  try {
+    const trimmed = Array.isArray(files) ? files.slice(0, 25) : [];
+    localStorage.setItem(roomFilesStorageKey(room), JSON.stringify(trimmed));
+  } catch (_error) {
+    // Ignoriere LocalStorage-Fehler (z.B. private mode/quota).
+  }
+}
+
+function upsertLocalRoomFile(room, file) {
+  const files = readLocalRoomFiles(room);
+  const key = file.id
+    ? `id:${file.id}`
+    : `${file.name}|${file.sentAt}|${file.data?.slice(0, 32) || ''}`;
+  const withoutDuplicate = files.filter((entry) => {
+    const entryKey = entry?.id
+      ? `id:${entry.id}`
+      : `${entry?.name}|${entry?.sentAt}|${String(entry?.data || '').slice(0, 32)}`;
+    return entryKey !== key;
+  });
+
+  withoutDuplicate.unshift(file);
+  writeLocalRoomFiles(room, withoutDuplicate);
+}
+
+function removeLocalRoomFile(room, id) {
+  if (!room || !id) {
+    return;
+  }
+
+  const files = readLocalRoomFiles(room);
+  writeLocalRoomFiles(
+    room,
+    files.filter((file) => file?.id !== id)
+  );
+}
+
+function removeFileFromUI(id) {
+  if (!id) {
+    return;
+  }
+
+  const item = fileList.querySelector(`li[data-file-id="${CSS.escape(id)}"]`);
+  if (item) {
+    item.remove();
+  }
+}
+
 function isValidRoomName(room) {
   return Boolean(room) && !room.includes('/') && room.length <= runtimeConfig.maxRoomNameLength;
 }
@@ -108,22 +174,70 @@ function showRoom(room) {
   configHint.textContent = `Max ${runtimeConfig.maxTextLength} Zeichen, Datei bis ${Math.floor(runtimeConfig.maxFileSizeBytes / 1024 / 1024)} MB`;
 }
 
-function addIncomingFile({ name, type, data, sentAt, source }) {
+function addIncomingFile({ id, name, type, data, sentAt, source }) {
+  const fileId = String(id || '');
   const safeType = type || 'application/octet-stream';
   const url = `data:${safeType};base64,${data}`;
 
+  if (fileId) {
+    removeFileFromUI(fileId);
+  }
+
   const li = document.createElement('li');
+  if (fileId) {
+    li.dataset.fileId = fileId;
+  }
   const time = new Date(sentAt || Date.now()).toLocaleTimeString('de-DE');
 
   const text = document.createElement('span');
   text.textContent = `${name} (${time})${source ? ` - ${source}` : ''}`;
+
+  const actions = document.createElement('div');
+  actions.className = 'fileActions';
 
   const link = document.createElement('a');
   link.href = url;
   link.download = name;
   link.textContent = 'Download';
 
-  li.append(text, link);
+  const removeButton = document.createElement('button');
+  removeButton.type = 'button';
+  removeButton.className = 'deleteFileBtn';
+  removeButton.textContent = 'Loeschen';
+  removeButton.disabled = !fileId;
+
+  removeButton.addEventListener('click', async () => {
+    if (!activeRoom || !fileId) {
+      return;
+    }
+
+    removeButton.disabled = true;
+    try {
+      const result = await new Promise((resolve, reject) => {
+        socket.timeout(10000).emit('file-delete', { id: fileId }, (error, response) => {
+          if (error) {
+            reject(new Error('Loeschen fehlgeschlagen (Timeout).'));
+            return;
+          }
+          resolve(response || { ok: false, message: 'Unbekannte Serverantwort.' });
+        });
+      });
+
+      if (!result.ok) {
+        throw new Error(result.message || 'Datei konnte nicht geloescht werden.');
+      }
+
+      removeLocalRoomFile(activeRoom, fileId);
+      removeFileFromUI(fileId);
+      showToast('Datei geloescht', 'success');
+    } catch (error) {
+      showToast(error.message || 'Datei konnte nicht geloescht werden.', 'error');
+      removeButton.disabled = false;
+    }
+  });
+
+  actions.append(link, removeButton);
+  li.append(text, actions);
   fileList.prepend(li);
 }
 
@@ -190,8 +304,27 @@ fileInput.addEventListener('change', async (event) => {
       data: await fileToBase64(file),
     };
 
-    socket.emit('file-share', payload);
-    addIncomingFile({ ...payload, sentAt: Date.now(), source: 'du' });
+    const result = await new Promise((resolve, reject) => {
+      socket.timeout(10000).emit('file-share', payload, (error, response) => {
+        if (error) {
+          reject(new Error('Upload-Zeitueberschreitung oder Verbindungsfehler.'));
+          return;
+        }
+
+        resolve(response || { ok: false, message: 'Unbekannte Serverantwort.' });
+      });
+    });
+
+    if (!result.ok) {
+      throw new Error(result.message || 'Dateiupload fehlgeschlagen.');
+    }
+
+    const uploadedFile = { ...payload, id: result.id || '', sentAt: Date.now() };
+    if (activeRoom) {
+      upsertLocalRoomFile(activeRoom, uploadedFile);
+    }
+
+    addIncomingFile({ ...uploadedFile, source: 'du' });
     showToast('Datei erfolgreich geteilt', 'success');
   } catch (error) {
     showToast(error.message || 'Dateiupload fehlgeschlagen.', 'error');
@@ -206,13 +339,24 @@ socket.on('text-update', ({ text }) => {
   isApplyingRemoteUpdate = false;
 });
 
-socket.on('room-joined', ({ text, clients }) => {
+socket.on('room-joined', ({ text, files, clients }) => {
   isJoined = true;
   sharedText.disabled = false;
   fileInput.disabled = false;
   isApplyingRemoteUpdate = true;
   sharedText.value = text || '';
   isApplyingRemoteUpdate = false;
+
+  fileList.textContent = '';
+  const serverFiles = Array.isArray(files) ? files : [];
+  const localFiles = activeRoom ? readLocalRoomFiles(activeRoom) : [];
+  const filesToRender = serverFiles.length ? serverFiles : localFiles;
+
+  filesToRender.forEach((file) => addIncomingFile(file));
+  if (activeRoom && serverFiles.length) {
+    writeLocalRoomFiles(activeRoom, serverFiles);
+  }
+
   showToast(`Raum beigetreten. ${clients || 1} Teilnehmer online.`, 'success');
 });
 
@@ -227,7 +371,22 @@ socket.on('rate-limit', ({ message }) => {
 });
 
 socket.on('file-share', (payload) => {
+  if (activeRoom) {
+    upsertLocalRoomFile(activeRoom, payload);
+  }
   addIncomingFile({ ...payload, source: 'remote' });
+});
+
+socket.on('file-delete', ({ id }) => {
+  if (!id) {
+    return;
+  }
+
+  if (activeRoom) {
+    removeLocalRoomFile(activeRoom, id);
+  }
+
+  removeFileFromUI(id);
 });
 
 socket.on('room-error', ({ message }) => {

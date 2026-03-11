@@ -1,4 +1,6 @@
 const path = require('path');
+const fs = require('fs');
+const crypto = require('crypto');
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -6,7 +8,6 @@ const config = require('./config');
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server);
 
 const HOST = config.host;
 const PORT = config.port;
@@ -18,11 +19,108 @@ const MAX_FILE_NAME_LENGTH = config.maxFileNameLength;
 const RATE_LIMIT = config.rateLimitPerMinute;
 const MAX_CLIENTS = config.maxClientsPerRoom;
 const SANITIZE_INPUT = config.sanitizeInput;
+const DATA_DIR = path.join(__dirname, 'data');
+const STATE_FILE = path.join(DATA_DIR, 'state.json');
+const SOCKET_MAX_BUFFER_SIZE = Math.max(MAX_FILE_SIZE * 2, 2 * 1024 * 1024);
+const io = new Server(server, {
+  maxHttpBufferSize: SOCKET_MAX_BUFFER_SIZE,
+});
 
 const roomState = new Map();
 const roomFiles = new Map();
 const roomClients = new Map();
 const rateLimitMap = new Map();
+let persistTimer = null;
+
+function loadPersistedState() {
+  try {
+    if (!fs.existsSync(STATE_FILE)) {
+      return;
+    }
+
+    const raw = fs.readFileSync(STATE_FILE, 'utf8');
+    if (!raw.trim()) {
+      return;
+    }
+
+    const parsed = JSON.parse(raw);
+    const persistedRooms = parsed.rooms || {};
+
+    for (const [room, value] of Object.entries(persistedRooms)) {
+      if (!normalizeRoomName(room)) {
+        continue;
+      }
+
+      if (typeof value.text === 'string') {
+        roomState.set(room, value.text.slice(0, MAX_TEXT_LENGTH));
+      }
+
+      if (Array.isArray(value.files)) {
+        const files = value.files
+          .filter((entry) => entry && typeof entry === 'object')
+          .map((entry) => {
+            let name = String(entry.name || 'datei').slice(0, MAX_FILE_NAME_LENGTH);
+            name = sanitizeText(name);
+            const type = String(entry.type || 'application/octet-stream');
+            const data = String(entry.data || '');
+            const sentAt = Number(entry.sentAt) || Date.now();
+            const id = String(entry.id || makeFileId());
+
+            return { id, name, type, data, sentAt };
+          })
+          .filter((entry) => {
+            const size = Buffer.byteLength(entry.data, 'base64');
+            return entry.data && Number.isFinite(size) && size > 0 && size <= MAX_FILE_SIZE;
+          })
+          .slice(0, 25);
+
+        if (files.length) {
+          roomFiles.set(room, files);
+        }
+      }
+    }
+  } catch (error) {
+    console.error('Konnte persistierten Zustand nicht laden:', error.message);
+  }
+}
+
+function persistStateNow() {
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+
+    const rooms = {};
+    const knownRooms = new Set([...roomState.keys(), ...roomFiles.keys()]);
+    for (const room of knownRooms) {
+      rooms[room] = {
+        text: roomState.get(room) || '',
+        files: (roomFiles.get(room) || []).slice(0, 25),
+      };
+    }
+
+    fs.writeFileSync(STATE_FILE, JSON.stringify({ rooms }, null, 2), 'utf8');
+  } catch (error) {
+    console.error('Konnte Zustand nicht speichern:', error.message);
+  }
+}
+
+function schedulePersistState() {
+  if (persistTimer) {
+    clearTimeout(persistTimer);
+  }
+
+  persistTimer = setTimeout(() => {
+    persistTimer = null;
+    persistStateNow();
+  }, 250);
+}
+
+function makeFileId() {
+  if (typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
 
 function sanitizeText(text) {
   if (!SANITIZE_INPUT) return text;
@@ -157,6 +255,7 @@ app.get('/curl-d/:room', (req, res) => {
       const sizeBytes = Buffer.byteLength(String(file.data || ''), 'base64');
       return [
         `--- Datei ${index + 1} ---`,
+        `id: ${file.id || '-'}`,
         `name: ${file.name}`,
         `type: ${file.type}`,
         `sizeBytes: ${sizeBytes}`,
@@ -180,6 +279,8 @@ app.get('/:room', (req, res, next) => {
   return res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
+loadPersistedState();
+
 io.on('connection', (socket) => {
   socket.on('join-room', (payload = {}) => {
     const room = normalizeRoomName(payload.room || MAIN_ROOM);
@@ -200,7 +301,13 @@ io.on('connection', (socket) => {
     incrementRoomClients(room);
 
     const currentText = roomState.get(room) || '';
-    socket.emit('room-joined', { room, text: currentText, clients: getRoomClientCount(room) });
+    const currentFiles = roomFiles.get(room) || [];
+    socket.emit('room-joined', {
+      room,
+      text: currentText,
+      files: currentFiles,
+      clients: getRoomClientCount(room),
+    });
     socket.to(room).emit('client-count', { clients: getRoomClientCount(room) });
   });
 
@@ -219,17 +326,22 @@ io.on('connection', (socket) => {
     text = sanitizeText(text);
     
     roomState.set(room, text);
+    schedulePersistState();
     socket.to(room).emit('text-update', { text });
   });
 
-  socket.on('file-share', (payload = {}) => {
+  socket.on('file-share', (payload = {}, ack) => {
+    const sendAck = typeof ack === 'function' ? ack : () => {};
     const room = socket.data.room;
     if (!room) {
+      sendAck({ ok: false, message: 'Kein Raum aktiv.' });
       return;
     }
 
     if (!checkRateLimit(socket.id)) {
-      socket.emit('rate-limit', { message: 'Zu viele Anfragen. Bitte warte einen Moment.' });
+      const message = 'Zu viele Anfragen. Bitte warte einen Moment.';
+      socket.emit('rate-limit', { message });
+      sendAck({ ok: false, message });
       return;
     }
 
@@ -241,26 +353,62 @@ io.on('connection', (socket) => {
     const bytes = Buffer.byteLength(data, 'base64');
 
     if (!data || !Number.isFinite(bytes) || bytes <= 0 || bytes > MAX_FILE_SIZE) {
-      socket.emit('file-error', { message: 'Datei ist leer oder zu groß (max. 8 MB).' });
+      const message = `Datei ist leer oder zu groß (max. ${Math.floor(MAX_FILE_SIZE / 1024 / 1024)} MB).`;
+      socket.emit('file-error', { message });
+      sendAck({ ok: false, message });
       return;
     }
 
-    socket.to(room).emit('file-share', {
+    const sharedFile = {
+      id: makeFileId(),
       name,
       type,
       data,
       sentAt: Date.now(),
-    });
+    };
+
+    socket.to(room).emit('file-share', sharedFile);
 
     const stored = roomFiles.get(room) || [];
-    stored.unshift({
-      name,
-      type,
-      data,
-      sentAt: Date.now(),
-    });
+    stored.unshift(sharedFile);
 
     roomFiles.set(room, stored.slice(0, 25));
+    persistStateNow();
+    sendAck({ ok: true, id: sharedFile.id });
+  });
+
+  socket.on('file-delete', (payload = {}, ack) => {
+    const sendAck = typeof ack === 'function' ? ack : () => {};
+    const room = socket.data.room;
+    if (!room) {
+      sendAck({ ok: false, message: 'Kein Raum aktiv.' });
+      return;
+    }
+
+    if (!checkRateLimit(socket.id)) {
+      const message = 'Zu viele Anfragen. Bitte warte einen Moment.';
+      socket.emit('rate-limit', { message });
+      sendAck({ ok: false, message });
+      return;
+    }
+
+    const id = String(payload.id || '').trim();
+    if (!id) {
+      sendAck({ ok: false, message: 'Ungueltige Datei-ID.' });
+      return;
+    }
+
+    const stored = roomFiles.get(room) || [];
+    const nextFiles = stored.filter((file) => file.id !== id);
+    if (nextFiles.length === stored.length) {
+      sendAck({ ok: false, message: 'Datei nicht gefunden.' });
+      return;
+    }
+
+    roomFiles.set(room, nextFiles);
+    persistStateNow();
+    io.to(room).emit('file-delete', { id });
+    sendAck({ ok: true, id });
   });
 
   socket.on('disconnect', () => {
